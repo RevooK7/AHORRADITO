@@ -191,9 +191,9 @@ const PIG_LEVEL_IMAGES = {
 };
 
 /* ---------- Estado ---------- */
-let state = { entries: [], presupuestos: {}, metas: [], configSemanal: { presupuestoAlimentacion: 120, presupuestoGasolina: 20 }, presupuestosActivos: ["Alimentación","Gasolina"] };
-let ui = { tab: "resumen", selectedMonth: monthKey(todayISO()), filtroCategoria: "Todas", busqueda: "", copyStatus:"idle", importStatus:null, theme: localStorage.getItem("mis-finanzas-theme") || "dark", heatmapDia: null, ajustesView: null, editandoId: null };
-let chartComparativa = null, chartSparkline = null, chartAhorroAcumulado = null;
+let state = { entries: [], presupuestos: {}, metas: [], configSemanal: { presupuestoAlimentacion: 120, presupuestoGasolina: 20 }, presupuestosActivos: ["Alimentación","Gasolina"], graficosVisibles: { sparkline:true, heatmap:true, gastoSemanal:true, comparativa:true, ahorroAcumulado:true, categorias:true } };
+let ui = { tab: "resumen", selectedMonth: monthKey(todayISO()), filtroCategoria: "Todas", busqueda: "", copyStatus:"idle", importStatus:null, theme: localStorage.getItem("mis-finanzas-theme") || "dark", heatmapDia: null, ajustesView: null, editandoId: null, graficoSemanalCategoria: "Todas" };
+let chartComparativa = null, chartSparkline = null, chartAhorroAcumulado = null, chartGastoSemanal = null;
 let lastRenderedTab = null;
 
 /* ---------- Utilidades ---------- */
@@ -226,6 +226,22 @@ function getWeekRange(dateStr){
   const start = addDays(dateStr, diffToMonday);
   const end = addDays(start, 6);
   return { start, end };
+}
+function getWeeksOfMonth(mesKey){
+  const [y,m] = mesKey.split("-").map(Number);
+  const totalDias = daysInMonth(y,m);
+  const primerDia = `${y}-${String(m).padStart(2,"0")}-01`;
+  const ultimoDia = `${y}-${String(m).padStart(2,"0")}-${String(totalDias).padStart(2,"0")}`;
+  const semanas = [];
+  let { start } = getWeekRange(primerDia);
+  let iter = 0;
+  while(start <= ultimoDia && iter < 6){
+    const end = addDays(start, 6);
+    semanas.push({ start, end });
+    start = addDays(start, 7);
+    iter++;
+  }
+  return semanas;
 }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 
@@ -293,6 +309,9 @@ function load(){
       state.metas = Array.isArray(data.metas) ? data.metas : [];
       state.configSemanal = (data.configSemanal && typeof data.configSemanal==="object") ? data.configSemanal : { presupuestoAlimentacion: 120, presupuestoGasolina: 20 };
       state.presupuestosActivos = Array.isArray(data.presupuestosActivos) ? data.presupuestosActivos : ["Alimentación","Gasolina"];
+      state.graficosVisibles = (data.graficosVisibles && typeof data.graficosVisibles==="object")
+        ? { sparkline:true, heatmap:true, gastoSemanal:true, comparativa:true, ahorroAcumulado:true, categorias:true, ...data.graficosVisibles }
+        : { sparkline:true, heatmap:true, gastoSemanal:true, comparativa:true, ahorroAcumulado:true, categorias:true };
       state.migrado_transporte_gasolina = !!data.migrado_transporte_gasolina;
     }
   }catch(e){ console.error("Error cargando datos", e); }
@@ -450,6 +469,31 @@ function getAhorroAcumuladoData(){
 }
 
 /* ---------- Render ---------- */
+let numberAnimState = {};
+function animateNumber(id, to){
+  const el = document.getElementById(id);
+  if(!el) return;
+  const prev = numberAnimState[id];
+  numberAnimState[id] = to;
+  if(prev === undefined || prev === to){
+    el.textContent = "S/ " + fmt(to);
+    return;
+  }
+  const from = prev;
+  const duration = 650;
+  let start = null;
+  function step(ts){
+    if(!start) start = ts;
+    const p = Math.min(1, (ts - start) / duration);
+    const eased = 1 - Math.pow(1 - p, 3);
+    const current = from + (to - from) * eased;
+    el.textContent = "S/ " + fmt(current);
+    if(p < 1) requestAnimationFrame(step);
+    else el.textContent = "S/ " + fmt(to);
+  }
+  requestAnimationFrame(step);
+}
+
 function render(){
   document.body.classList.toggle("theme-light", ui.theme === "light");
   const app = document.getElementById("app");
@@ -464,6 +508,15 @@ function render(){
   }
   attachHandlers();
   if(ui.tab==="graficos") drawCharts();
+  if(ui.tab==="resumen"){
+    const me = getMonthEntries(ui.selectedMonth);
+    const ingresos = me.filter(e=>e.tipo==="ingreso").reduce((a,e)=>a+e.monto,0);
+    const gastos = me.filter(e=>e.tipo==="gasto").reduce((a,e)=>a+e.monto,0);
+    animateNumber("num-balance", ingresos - gastos);
+    animateNumber("num-ahorro-total", getAhorroTotal());
+    animateNumber("num-ingresos", ingresos);
+    animateNumber("num-gastos", gastos);
+  }
 }
 
 function renderBottomTabs(){
@@ -553,8 +606,8 @@ function tabResumen(){
   ${ahorroTotalCard(getAhorroTotal())}
   ${heroBalanceCard(balance)}
   <div class="grid2" style="margin:10px 0 20px;">
-    ${summaryCard("Ingresos", ingresos, "#6fae7f", ICON_TRENDING_UP)}
-    ${summaryCard("Gastos", gastos, "#c1584a", ICON_TRENDING_DOWN)}
+    ${summaryCard("Ingresos", ingresos, "#6fae7f", ICON_TRENDING_UP, "num-ingresos")}
+    ${summaryCard("Gastos", gastos, "#c1584a", ICON_TRENDING_DOWN, "num-gastos")}
   </div>
   <div class="grid2" style="margin-bottom:20px;">
     ${weeklyCard("presupuestoAlimentacion", "Gasto semanal (Alimentación)", ICON_BASKET, restanteSemanalAlimentacion, gastoSemanalAlimentacion, presupuestoSemanalAlimentacion)}
@@ -689,7 +742,10 @@ function heatmapCalendar(){
     </div>
     ${diaMax ? `<div class="mono" style="font-size:12px;margin-top:12px;color:var(--gold);">
       🔥 Tu día de mayor gasto fue el ${new Date(diaMax.fecha+"T00:00:00").getDate()} de ${MONTHS_ES[parseInt(diaMax.fecha.split("-")[1],10)-1]}, con S/ ${fmt(diaMax.monto)}
-    </div>` : `<p class="muted" style="margin:12px 0 0;font-size:12px;">Aún no registras movimientos este mes.</p>`}
+    </div>` : `<div style="text-align:center;padding:10px 0 0;">
+      <img src="data:image/png;base64,${APP_ICON_B64}" alt="Ahorradito" style="width:40px;height:40px;border-radius:10px;opacity:0.5;margin-bottom:6px;">
+      <p class="muted" style="margin:0;font-size:12px;">Aún no registras movimientos este mes.</p>
+    </div>`}
     ${detalle}
   </div>`;
 }
@@ -700,34 +756,54 @@ function tabGraficos(){
   me.filter(e=>e.tipo==="gasto").forEach(e=>{ catMap[e.categoria]=(catMap[e.categoria]||0)+e.monto; });
   const catEntries = Object.entries(catMap).sort((a,b)=>b[1]-a[1]);
   const totalGastos = catEntries.reduce((a,[,v])=>a+v,0);
+  const vis = state.graficosVisibles || {};
 
   return `
+  ${vis.sparkline !== false ? `
   <div class="card" style="padding:14px 16px;">
     <div class="summary-label" style="margin-bottom:6px;">
       <span style="color:#7a95b8;">${ICON_TRENDING_DOWN}</span><span style="color:var(--muted);">Gastos de la semana (lunes a domingo)</span>
     </div>
     <p class="muted" style="margin:0 0 8px;font-size:12px;">Cuánto gastaste cada día de esta semana. Te ayuda a ver si un día se disparó más que otros.</p>
     <canvas id="chart-sparkline" height="46"></canvas>
-  </div>
+  </div>` : ""}
 
-  ${heatmapCalendar()}
+  ${vis.heatmap !== false ? heatmapCalendar() : ""}
 
+  ${vis.gastoSemanal !== false ? `
   <div class="card">
-    <h3 class="serif" style="font-size:16px;margin:0 0 4px;color:var(--ink-strong);">Comparativa mensual</h3>
+    <h3 class="serif" style="font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:7px;color:var(--ink-strong);"><span style="color:#c1584a;">${ICON_CHART}</span>Gasto por semana</h3>
+    <p class="muted" style="margin:0 0 6px;font-size:12px;">Cuánto gastaste cada semana del mes seleccionado, en general o por una categoría específica.</p>
+    <div id="insight-gasto-semanal" class="mono" style="font-size:11.5px;color:var(--gold);min-height:16px;margin-bottom:10px;"></div>
+    <select id="sel-categoria-grafico-semanal" style="margin-bottom:12px;">
+      <option value="Todas" ${ui.graficoSemanalCategoria==="Todas"?"selected":""}>Todas las categorías</option>
+      ${CATEGORIES.map(c=>`<option value="${c}" ${ui.graficoSemanalCategoria===c?"selected":""}>${c}</option>`).join("")}
+    </select>
+    <canvas id="chart-gasto-semanal" height="200"></canvas>
+  </div>` : ""}
+
+  ${vis.comparativa !== false ? `
+  <div class="card">
+    <h3 class="serif" style="font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:7px;color:var(--ink-strong);"><span style="color:#7a95b8;">${ICON_CHART}</span>Comparativa mensual</h3>
     <p class="muted" style="margin:0 0 12px;font-size:12px;">Compara tus ingresos y gastos mes a mes, para ver si vas mejorando o empeorando con el tiempo.</p>
     <canvas id="chart-comparativa" height="200"></canvas>
-  </div>
+  </div>` : ""}
 
+  ${vis.ahorroAcumulado !== false ? `
   <div class="card">
-    <h3 class="serif" style="font-size:16px;margin:0 0 4px;color:var(--ink-strong);">Ahorro acumulado</h3>
+    <h3 class="serif" style="font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:7px;color:var(--ink-strong);"><span style="color:#d4a94a;">${ICON_PIGGY}</span>Ahorro acumulado</h3>
     <p class="muted" style="margin:0 0 12px;font-size:12px;">La suma total de todo lo que has ahorrado (o gastado de más) desde que empezaste a usar la app, mes tras mes.</p>
     <canvas id="chart-ahorro-acumulado" height="200"></canvas>
-  </div>
+  </div>` : ""}
 
+  ${vis.categorias !== false ? `
   <div class="card">
-    <h3 class="serif" style="font-size:16px;margin:0 0 4px;color:var(--ink-strong);">Gastos por categoría</h3>
+    <h3 class="serif" style="font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:7px;color:var(--ink-strong);"><span style="color:#4f9b9b;">${ICON_TAG}</span>Gastos por categoría</h3>
     <p class="muted" style="margin:0 0 14px;font-size:12px;">En qué categorías se te fue el dinero este mes, de mayor a menor.</p>
-    ${catEntries.length===0 ? `<p class="muted" style="margin:0;font-size:12px;">Sin gastos registrados este mes.</p>` :
+    ${catEntries.length===0 ? `<div style="text-align:center;padding:16px 0;">
+        <img src="data:image/png;base64,${APP_ICON_B64}" alt="Ahorradito" style="width:44px;height:44px;border-radius:11px;opacity:0.5;margin-bottom:8px;">
+        <p class="muted" style="margin:0;font-size:12px;">Sin gastos registrados este mes.</p>
+      </div>` :
       catEntries.map(([cat,val])=>{
         const pct = totalGastos>0 ? (val/totalGastos)*100 : 0;
         const color = colorForCategory(cat);
@@ -743,7 +819,8 @@ function tabGraficos(){
         </div>`;
       }).join("")
     }
-  </div>`;
+  </div>` : ""}
+  ${Object.values(vis).every(v=>v===false) ? `<p class="muted" style="text-align:center;margin-top:30px;">No tienes ningún gráfico activado. Ve a Ajustes → Personalizar gráficos para activar alguno.</p>` : ""}`;
 }
 
 function tabPresupuestos(){
@@ -875,8 +952,14 @@ function tabMetas(){
 
 function tabAjustes(){
   if(ui.ajustesView === "respaldo") return pantallaRespaldo();
+  if(ui.ajustesView === "graficos") return pantallaPersonalizarGraficos();
   return `
   <div class="card" style="padding:4px;">
+    <button class="settings-row" data-ajustes-ir="graficos">
+      <span class="settings-row-icon">${ICON_CHART}</span>
+      <span class="settings-row-label">Personalizar gráficos</span>
+      <span class="settings-row-chevron">›</span>
+    </button>
     <button class="settings-row" data-ajustes-ir="respaldo">
       <span class="settings-row-icon">${ICON_SAVE}</span>
       <span class="settings-row-label">Respaldo</span>
@@ -890,6 +973,33 @@ function tabAjustes(){
     <div class="serif" style="font-size:16px;color:var(--ink-strong);margin-bottom:4px;">AHORRADITO</div>
     <div class="mono muted" style="font-size:12px;">Versión ${APP_VERSION}</div>
     <div class="mono muted" style="font-size:12px;margin-top:2px;">Hecho por RevooK7</div>
+  </div>`;
+}
+
+function pantallaPersonalizarGraficos(){
+  const opciones = [
+    { key:"sparkline", label:"Gastos de la semana" },
+    { key:"heatmap", label:"Mapa de calor" },
+    { key:"gastoSemanal", label:"Gasto por semana" },
+    { key:"comparativa", label:"Comparativa mensual" },
+    { key:"ahorroAcumulado", label:"Ahorro acumulado" },
+    { key:"categorias", label:"Gastos por categoría" }
+  ];
+  const vis = state.graficosVisibles || {};
+  return `
+  <button class="ajustes-back" data-ajustes-volver>‹ Ajustes</button>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+    <span style="color:var(--gold);">${ICON_CHART}</span>
+    <h2 class="serif" style="font-size:20px;margin:0;color:var(--ink-strong);">Personalizar gráficos</h2>
+  </div>
+  <div class="card">
+    <p class="muted" style="margin:0 0 14px;">Elige qué gráficos quieres ver en la pestaña Gráficos.</p>
+    ${opciones.map(op=>`
+      <label style="flex-direction:row;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer;">
+        <span style="color:var(--ink-strong);font-size:14px;">${op.label}</span>
+        <input type="checkbox" data-toggle-grafico="${op.key}" ${vis[op.key]!==false?"checked":""} style="width:auto;accent-color:var(--gold);transform:scale(1.2);">
+      </label>
+    `).join("")}
   </div>`;
 }
 
@@ -963,7 +1073,7 @@ function heroBalanceCard(balance){
   const color = balance>=0 ? "#d4a94a" : "#c1584a";
   return `<div class="summary-card">
     <div class="summary-label" style="color:${color};">${ICON_WALLET}<span style="color:var(--muted);">Balance</span></div>
-    <div class="summary-value mono" style="color:${color};">S/ ${fmt(balance)}</div>
+    <div id="num-balance" class="summary-value mono" style="color:${color};">S/ ${fmt(balance)}</div>
   </div>`;
 }
 
@@ -983,16 +1093,16 @@ function ahorroTotalCard(ahorroTotal){
     </div>
     <div style="min-width:0;">
       <div class="muted" style="font-size:12px;margin-bottom:2px;">Ahorro total</div>
-      <div class="mono" style="font-size:25px;font-weight:700;color:${color};line-height:1.1;">S/ ${fmt(ahorroTotal)}</div>
+      <div id="num-ahorro-total" class="mono" style="font-size:25px;font-weight:700;color:${color};line-height:1.1;">S/ ${fmt(ahorroTotal)}</div>
       <div class="muted" style="font-size:10.5px;margin-top:2px;">${subtitulo}</div>
     </div>
   </div>`;
 }
 
-function summaryCard(label, value, color, icon){
+function summaryCard(label, value, color, icon, id){
   return `<div class="summary-card">
     <div class="summary-label" style="color:${color};">${icon}<span style="color:var(--muted);">${label}</span></div>
-    <div class="summary-value mono" style="color:${color};">S/ ${fmt(value)}</div>
+    <div ${id?`id="${id}"`:""} class="summary-value mono" style="color:${color};">S/ ${fmt(value)}</div>
   </div>`;
 }
 
@@ -1066,17 +1176,112 @@ const CHART_TOOLTIP_STYLE = {
   bodyFont:{family:"'IBM Plex Mono', monospace", size:12}, boxPadding:4
 };
 
+const valueLabelsPlugin = {
+  id: "valueLabels",
+  afterDatasetsDraw(chart){
+    const { ctx } = chart;
+    chart.data.datasets.forEach((dataset, i) => {
+      if(dataset.type && dataset.type !== "bar") return;
+      if(chart.config.type !== "bar" && dataset.type !== "bar") return;
+      const meta = chart.getDatasetMeta(i);
+      if(meta.hidden) return;
+      meta.data.forEach((bar, index) => {
+        const value = dataset.data[index];
+        if(value === undefined || value === null || value === 0) return;
+        ctx.save();
+        ctx.fillStyle = "#8b95a1";
+        ctx.font = "600 9.5px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(fmt(value).replace(".00",""), bar.x, bar.y - 5);
+        ctx.restore();
+      });
+    });
+  }
+};
+Chart.register(valueLabelsPlugin);
+
+function updateGastoSemanalChart(){
+  const semanas = getWeeksOfMonth(ui.selectedMonth);
+  const catSeleccionada = ui.graficoSemanalCategoria;
+  const hoy = todayISO();
+  const datosSemanales = semanas.map(sem=>{
+    const total = state.entries
+      .filter(e=> e.tipo==="gasto" && e.fecha>=sem.start && e.fecha<=sem.end && (catSeleccionada==="Todas" || e.categoria===catSeleccionada))
+      .reduce((a,e)=>a+e.monto,0);
+    const [,,d1] = sem.start.split("-");
+    const [,m2,d2] = sem.end.split("-");
+    const esActual = hoy >= sem.start && hoy <= sem.end;
+    return { label: `${parseInt(d1,10)}-${parseInt(d2,10)} ${MONTHS_ES[parseInt(m2,10)-1]}`, total, esActual };
+  });
+  const colorBase = catSeleccionada==="Todas" ? "#c1584a" : colorForCategory(catSeleccionada);
+  const colores = datosSemanales.map(d => d.esActual ? "#d4a94a" : colorBase + "99");
+
+  const idxActual = datosSemanales.findIndex(d=>d.esActual);
+  const insightEl = document.getElementById("insight-gasto-semanal");
+  if(insightEl){
+    if(idxActual > 0){
+      const actual = datosSemanales[idxActual].total;
+      const anterior = datosSemanales[idxActual-1].total;
+      if(anterior > 0){
+        const diff = ((actual-anterior)/anterior)*100;
+        insightEl.textContent = diff >= 0
+          ? `📈 Vas ${diff.toFixed(0)}% más alto que la semana pasada`
+          : `📉 Vas ${Math.abs(diff).toFixed(0)}% más bajo que la semana pasada`;
+      } else if(actual > 0){
+        insightEl.textContent = `Llevas S/ ${fmt(actual)} esta semana (la pasada no tuvo gastos en esta categoría).`;
+      } else {
+        insightEl.textContent = "";
+      }
+    } else {
+      insightEl.textContent = "";
+    }
+  }
+
+  const ctxSemanal = document.getElementById("chart-gasto-semanal");
+  if(!ctxSemanal) return;
+  if(chartGastoSemanal){
+    chartGastoSemanal.data.labels = datosSemanales.map(d=>d.label);
+    chartGastoSemanal.data.datasets[0].data = datosSemanales.map(d=>d.total);
+    chartGastoSemanal.data.datasets[0].backgroundColor = colores;
+    chartGastoSemanal.data.datasets[0].label = catSeleccionada==="Todas" ? "Gasto total" : catSeleccionada;
+    chartGastoSemanal.update();
+  } else {
+    chartGastoSemanal = new Chart(ctxSemanal, {
+      type: "bar",
+      data: {
+        labels: datosSemanales.map(d=>d.label),
+        datasets: [{ label: catSeleccionada==="Todas" ? "Gasto total" : catSeleccionada, data: datosSemanales.map(d=>d.total), backgroundColor: colores, borderRadius:4 }]
+      },
+      options: {
+        plugins: {
+          legend: { display:false },
+          tooltip: { ...CHART_TOOLTIP_STYLE, callbacks:{ label:(ctx)=>` S/ ${fmt(ctx.parsed.y)}` } }
+        },
+        layout: { padding: { top: 16 } },
+        scales: {
+          x: { ticks:{ color:"#8b95a1", font:{size:10} }, grid:{ display:false } },
+          y: { ticks:{ color:"#8b95a1", font:{size:10} }, grid:{ color:"#2c3540" } }
+        }
+      }
+    });
+  }
+}
+
 function drawCharts(){
+  updateGastoSemanalChart();
+
   const comp = getComparisonData();
   const ctxComp = document.getElementById("chart-comparativa");
   if(chartComparativa) chartComparativa.destroy();
   if(ctxComp){
+    const mesActualKey = monthKey(todayISO());
     chartComparativa = new Chart(ctxComp, {
       data: {
         labels: comp.map(c=>c.mes),
         datasets: [
-          { type:"bar", label:"Ingresos", data: comp.map(c=>c.Ingresos), backgroundColor:"#6fae7f", borderRadius:3 },
-          { type:"bar", label:"Gastos", data: comp.map(c=>c.Gastos), backgroundColor:"#c1584a", borderRadius:3 }
+          { type:"bar", label:"Ingresos", data: comp.map(c=>c.Ingresos), backgroundColor: comp.map(c=>c.key===mesActualKey?"#6fae7f":"#6fae7f99"), borderRadius:3 },
+          { type:"bar", label:"Gastos", data: comp.map(c=>c.Gastos), backgroundColor: comp.map(c=>c.key===mesActualKey?"#c1584a":"#c1584a99"), borderRadius:3 }
         ]
       },
       options: {
@@ -1084,6 +1289,7 @@ function drawCharts(){
           legend: { position:"bottom", labels:{ color:"#8b95a1", font:{size:11} } },
           tooltip: { ...CHART_TOOLTIP_STYLE, callbacks:{ label:(ctx)=>` ${ctx.dataset.label}: S/ ${fmt(ctx.parsed.y)}` } }
         },
+        layout: { padding: { top: 16 } },
         scales: {
           x: { ticks:{ color:"#8b95a1", font:{size:11} }, grid:{ display:false } },
           y: { ticks:{ color:"#8b95a1", font:{size:10} }, grid:{ color:"#2c3540" } }
@@ -1159,6 +1365,14 @@ function attachHandlers(){
   const btnAjustesVolver = document.getElementById("btn-ajustes-volver") || document.querySelector("[data-ajustes-volver]");
   if(btnAjustesVolver) btnAjustesVolver.addEventListener("click", ()=>{ ui.ajustesView = null; render(); });
 
+  document.querySelectorAll("[data-toggle-grafico]").forEach(chk=>{
+    chk.addEventListener("change", e=>{
+      if(!state.graficosVisibles) state.graficosVisibles = {};
+      state.graficosVisibles[chk.dataset.toggleGrafico] = e.target.checked;
+      save();
+    });
+  });
+
   document.querySelectorAll(".heatmap-cell").forEach(cell=>{
     cell.addEventListener("click", ()=>{
       const fecha = cell.dataset.fecha;
@@ -1179,6 +1393,12 @@ function attachHandlers(){
   // Selector de mes (presente en Resumen, Gráficos y Presupuestos)
   document.querySelectorAll(".sel-mes").forEach(sel=>{
     sel.addEventListener("change", e=>{ ui.selectedMonth = e.target.value; render(); });
+  });
+
+  const selCategoriaSemanal = document.getElementById("sel-categoria-grafico-semanal");
+  if(selCategoriaSemanal) selCategoriaSemanal.addEventListener("change", e=>{
+    ui.graficoSemanalCategoria = e.target.value;
+    updateGastoSemanalChart();
   });
 
   document.querySelectorAll(".input-presupuesto-semanal").forEach(inp=>{
@@ -1328,6 +1548,9 @@ function attachHandlers(){
       state.metas = Array.isArray(data.metas) ? data.metas : [];
       state.configSemanal = (data.configSemanal && typeof data.configSemanal==="object") ? data.configSemanal : { presupuestoAlimentacion: 120, presupuestoGasolina: 20 };
       state.presupuestosActivos = Array.isArray(data.presupuestosActivos) ? data.presupuestosActivos : ["Alimentación","Gasolina"];
+      state.graficosVisibles = (data.graficosVisibles && typeof data.graficosVisibles==="object")
+        ? { sparkline:true, heatmap:true, gastoSemanal:true, comparativa:true, ahorroAcumulado:true, categorias:true, ...data.graficosVisibles }
+        : { sparkline:true, heatmap:true, gastoSemanal:true, comparativa:true, ahorroAcumulado:true, categorias:true };
       save();
       ui.importStatus = "ok"; render();
     }catch(e){ ui.importStatus = "error"; render(); }
