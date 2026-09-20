@@ -193,7 +193,7 @@ const PIG_LEVEL_IMAGES = {
 /* ---------- Estado ---------- */
 let state = { entries: [], presupuestos: {}, metas: [], configSemanal: { presupuestoAlimentacion: 120, presupuestoGasolina: 20 }, presupuestosActivos: ["Alimentación","Gasolina"], graficosVisibles: { sparkline:true, heatmap:true, gastoSemanal:true, comparativa:true, ahorroAcumulado:true, categorias:true } };
 let ui = { tab: "resumen", selectedMonth: monthKey(todayISO()), filtroCategoria: "Todas", busqueda: "", copyStatus:"idle", importStatus:null, theme: localStorage.getItem("mis-finanzas-theme") || "dark", heatmapDia: null, ajustesView: null, editandoId: null, graficoSemanalCategoria: "Todas" };
-let chartComparativa = null, chartSparkline = null, chartAhorroAcumulado = null, chartGastoSemanal = null;
+let chartComparativa = null, chartSparkline = null, chartAhorroAcumulado = null;
 let lastRenderedTab = null;
 
 /* ---------- Utilidades ---------- */
@@ -750,6 +750,68 @@ function heatmapCalendar(){
   </div>`;
 }
 
+function renderGastoPorSemana(){
+  const semanas = getWeeksOfMonth(ui.selectedMonth);
+  const catSel = ui.graficoSemanalCategoria;
+  const hoy = todayISO();
+  const datosSemanales = semanas.map(sem=>{
+    const total = state.entries
+      .filter(e=> e.tipo==="gasto" && e.fecha>=sem.start && e.fecha<=sem.end && (catSel==="Todas" || e.categoria===catSel))
+      .reduce((a,e)=>a+e.monto,0);
+    const [,,d1] = sem.start.split("-");
+    const [,m2,d2] = sem.end.split("-");
+    const esActual = hoy >= sem.start && hoy <= sem.end;
+    return { label: `${parseInt(d1,10)}-${parseInt(d2,10)} ${MONTHS_ES[parseInt(m2,10)-1]}`, total, esActual };
+  });
+  const totalMes = datosSemanales.reduce((a,d)=>a+d.total,0);
+  const colorBase = catSel==="Todas" ? "#c1584a" : colorForCategory(catSel);
+
+  let insight = "";
+  const idxActual = datosSemanales.findIndex(d=>d.esActual);
+  if(idxActual > 0){
+    const actual = datosSemanales[idxActual].total;
+    const anterior = datosSemanales[idxActual-1].total;
+    if(anterior > 0){
+      const diff = ((actual-anterior)/anterior)*100;
+      insight = diff >= 0
+        ? `📈 Vas ${diff.toFixed(0)}% más alto que la semana pasada`
+        : `📉 Vas ${Math.abs(diff).toFixed(0)}% más bajo que la semana pasada`;
+    } else if(actual > 0){
+      insight = `Llevas S/ ${fmt(actual)} esta semana (la pasada no tuvo gastos en esta categoría).`;
+    }
+  }
+
+  return `
+  <div class="card">
+    <h3 class="serif" style="font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:7px;color:var(--ink-strong);"><span style="color:#c1584a;">${ICON_CHART}</span>Gasto por semana</h3>
+    <p class="muted" style="margin:0 0 6px;font-size:12px;">Cuánto gastaste cada semana del mes seleccionado, en general o por una categoría específica.</p>
+    ${insight ? `<div class="mono" style="font-size:11.5px;color:var(--gold);margin-bottom:10px;">${insight}</div>` : ""}
+    <select id="sel-categoria-grafico-semanal" style="margin-bottom:14px;">
+      <option value="Todas" ${catSel==="Todas"?"selected":""}>Todas las categorías</option>
+      ${CATEGORIES.map(c=>`<option value="${c}" ${catSel===c?"selected":""}>${c}</option>`).join("")}
+    </select>
+    ${totalMes===0 ? `<div style="text-align:center;padding:16px 0;">
+        <img src="data:image/png;base64,${APP_ICON_B64}" alt="Ahorradito" style="width:44px;height:44px;border-radius:11px;opacity:0.5;margin-bottom:8px;">
+        <p class="muted" style="margin:0;font-size:12px;">Sin gastos registrados en esta categoría este mes.</p>
+      </div>` :
+      datosSemanales.map(d=>{
+        const pct = totalMes>0 ? (d.total/totalMes)*100 : 0;
+        const color = d.esActual ? "#d4a94a" : colorBase;
+        return `<div style="margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
+            <div style="display:flex;align-items:center;gap:7px;">
+              <span style="font-size:13px;color:var(--ink-strong);">${d.label}</span>
+              ${d.esActual ? `<span class="badge" style="background:#d4a94a22;color:#d4a94a;">Actual</span>` : ""}
+            </div>
+            <span class="mono" style="font-size:12px;color:${color};font-weight:600;">S/ ${fmt(d.total)} · ${pct.toFixed(0)}%</span>
+          </div>
+          <div class="progress-track"><div class="progress-fill" style="width:${pct}%;background:${color};"></div></div>
+        </div>`;
+      }).join("")
+    }
+  </div>`;
+}
+
 function tabGraficos(){
   const me = getMonthEntries(ui.selectedMonth);
   const catMap = {};
@@ -770,17 +832,7 @@ function tabGraficos(){
 
   ${vis.heatmap !== false ? heatmapCalendar() : ""}
 
-  ${vis.gastoSemanal !== false ? `
-  <div class="card">
-    <h3 class="serif" style="font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:7px;color:var(--ink-strong);"><span style="color:#c1584a;">${ICON_CHART}</span>Gasto por semana</h3>
-    <p class="muted" style="margin:0 0 6px;font-size:12px;">Cuánto gastaste cada semana del mes seleccionado, en general o por una categoría específica.</p>
-    <div id="insight-gasto-semanal" class="mono" style="font-size:11.5px;color:var(--gold);min-height:16px;margin-bottom:10px;"></div>
-    <select id="sel-categoria-grafico-semanal" style="margin-bottom:12px;">
-      <option value="Todas" ${ui.graficoSemanalCategoria==="Todas"?"selected":""}>Todas las categorías</option>
-      ${CATEGORIES.map(c=>`<option value="${c}" ${ui.graficoSemanalCategoria===c?"selected":""}>${c}</option>`).join("")}
-    </select>
-    <canvas id="chart-gasto-semanal" height="200"></canvas>
-  </div>` : ""}
+  ${vis.gastoSemanal !== false ? renderGastoPorSemana() : ""}
 
   ${vis.comparativa !== false ? `
   <div class="card">
@@ -1201,76 +1253,7 @@ const valueLabelsPlugin = {
 };
 Chart.register(valueLabelsPlugin);
 
-function updateGastoSemanalChart(){
-  const semanas = getWeeksOfMonth(ui.selectedMonth);
-  const catSeleccionada = ui.graficoSemanalCategoria;
-  const hoy = todayISO();
-  const datosSemanales = semanas.map(sem=>{
-    const total = state.entries
-      .filter(e=> e.tipo==="gasto" && e.fecha>=sem.start && e.fecha<=sem.end && (catSeleccionada==="Todas" || e.categoria===catSeleccionada))
-      .reduce((a,e)=>a+e.monto,0);
-    const [,,d1] = sem.start.split("-");
-    const [,m2,d2] = sem.end.split("-");
-    const esActual = hoy >= sem.start && hoy <= sem.end;
-    return { label: `${parseInt(d1,10)}-${parseInt(d2,10)} ${MONTHS_ES[parseInt(m2,10)-1]}`, total, esActual };
-  });
-  const colorBase = catSeleccionada==="Todas" ? "#c1584a" : colorForCategory(catSeleccionada);
-  const colores = datosSemanales.map(d => d.esActual ? "#d4a94a" : colorBase + "99");
-
-  const idxActual = datosSemanales.findIndex(d=>d.esActual);
-  const insightEl = document.getElementById("insight-gasto-semanal");
-  if(insightEl){
-    if(idxActual > 0){
-      const actual = datosSemanales[idxActual].total;
-      const anterior = datosSemanales[idxActual-1].total;
-      if(anterior > 0){
-        const diff = ((actual-anterior)/anterior)*100;
-        insightEl.textContent = diff >= 0
-          ? `📈 Vas ${diff.toFixed(0)}% más alto que la semana pasada`
-          : `📉 Vas ${Math.abs(diff).toFixed(0)}% más bajo que la semana pasada`;
-      } else if(actual > 0){
-        insightEl.textContent = `Llevas S/ ${fmt(actual)} esta semana (la pasada no tuvo gastos en esta categoría).`;
-      } else {
-        insightEl.textContent = "";
-      }
-    } else {
-      insightEl.textContent = "";
-    }
-  }
-
-  const ctxSemanal = document.getElementById("chart-gasto-semanal");
-  if(!ctxSemanal) return;
-  if(chartGastoSemanal){
-    chartGastoSemanal.data.labels = datosSemanales.map(d=>d.label);
-    chartGastoSemanal.data.datasets[0].data = datosSemanales.map(d=>d.total);
-    chartGastoSemanal.data.datasets[0].backgroundColor = colores;
-    chartGastoSemanal.data.datasets[0].label = catSeleccionada==="Todas" ? "Gasto total" : catSeleccionada;
-    chartGastoSemanal.update();
-  } else {
-    chartGastoSemanal = new Chart(ctxSemanal, {
-      type: "bar",
-      data: {
-        labels: datosSemanales.map(d=>d.label),
-        datasets: [{ label: catSeleccionada==="Todas" ? "Gasto total" : catSeleccionada, data: datosSemanales.map(d=>d.total), backgroundColor: colores, borderRadius:4 }]
-      },
-      options: {
-        plugins: {
-          legend: { display:false },
-          tooltip: { ...CHART_TOOLTIP_STYLE, callbacks:{ label:(ctx)=>` S/ ${fmt(ctx.parsed.y)}` } }
-        },
-        layout: { padding: { top: 16 } },
-        scales: {
-          x: { ticks:{ color:"#8b95a1", font:{size:10} }, grid:{ display:false } },
-          y: { ticks:{ color:"#8b95a1", font:{size:10} }, grid:{ color:"#2c3540" } }
-        }
-      }
-    });
-  }
-}
-
 function drawCharts(){
-  updateGastoSemanalChart();
-
   const comp = getComparisonData();
   const ctxComp = document.getElementById("chart-comparativa");
   if(chartComparativa) chartComparativa.destroy();
@@ -1398,7 +1381,7 @@ function attachHandlers(){
   const selCategoriaSemanal = document.getElementById("sel-categoria-grafico-semanal");
   if(selCategoriaSemanal) selCategoriaSemanal.addEventListener("change", e=>{
     ui.graficoSemanalCategoria = e.target.value;
-    updateGastoSemanalChart();
+    render();
   });
 
   document.querySelectorAll(".input-presupuesto-semanal").forEach(inp=>{
